@@ -5,13 +5,14 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
-  # Lanzamiento manual (pestaña Actions) o desde n8n
+  # Permite lanzar el pipeline a mano (pestaña Actions) o desde n8n (flujo 2)
   workflow_dispatch:
     inputs:
       motivo:
-        description: Quién lanza el pipeline y por qué
+        description: "Quién o qué lanzó la ejecución (por ejemplo: n8n)"
         required: false
-        default: ""
+        default: "manual"
+        type: string
 
 # El pipeline solo necesita leer el código
 permissions:
@@ -22,8 +23,8 @@ jobs:
     name: Calidad y pruebas
     runs-on: ubuntu-latest
     outputs:
-      ruff_hallazgos: ${{ steps.datos.outputs.ruff_hallazgos }}
-      pruebas_fallidas: ${{ steps.datos.outputs.pruebas_fallidas }}
+      ruff_hallazgos: ${{ steps.salidas.outputs.ruff_hallazgos }}
+      pruebas_fallidas: ${{ steps.salidas.outputs.pruebas_fallidas }}
 
     steps:
       - name: Obtener el código
@@ -52,17 +53,17 @@ jobs:
         run: python -m pytest tests -v --junitxml=reports/pytest.xml
 
       - name: Datos para el resumen
-        id: datos
+        id: salidas
         if: ${{ !cancelled() }}
         run: |
-          echo "ruff_hallazgos=$(ruff check . --output-format=json --exit-zero | python3 scripts/ci_salidas.py contar)" >> "$GITHUB_OUTPUT"
-          echo "pruebas_fallidas=$(python3 scripts/ci_salidas.py fallidas reports/pytest.xml)" >> "$GITHUB_OUTPUT"
+          echo "ruff_hallazgos=$(ruff check . --output-format=json --exit-zero | python scripts/ci_salidas.py contar)" >> "$GITHUB_OUTPUT"
+          echo "pruebas_fallidas=$(python scripts/ci_salidas.py fallidas reports/pytest.xml)" >> "$GITHUB_OUTPUT"
 
   e2e:
     name: Pruebas end-to-end
     runs-on: ubuntu-latest
     outputs:
-      pruebas_fallidas: ${{ steps.datos.outputs.pruebas_fallidas }}
+      pruebas_fallidas: ${{ steps.salidas.outputs.pruebas_fallidas }}
 
     steps:
       - name: Obtener el código
@@ -88,15 +89,15 @@ jobs:
         run: >
           python -m pytest tests_e2e -v
           --base-url http://localhost:8000
-          --junitxml=reports/e2e.xml
           --tracing retain-on-failure
           --screenshot only-on-failure
           --output test-results
+          --junitxml=reports/e2e.xml
 
       - name: Datos para el resumen
-        id: datos
+        id: salidas
         if: ${{ !cancelled() }}
-        run: echo "pruebas_fallidas=$(python3 scripts/ci_salidas.py fallidas reports/e2e.xml)" >> "$GITHUB_OUTPUT"
+        run: echo "pruebas_fallidas=$(python scripts/ci_salidas.py fallidas reports/e2e.xml)" >> "$GITHUB_OUTPUT"
 
       - name: Logs de la app (si algo falló)
         if: failure()
@@ -136,7 +137,7 @@ jobs:
     name: Seguridad dinámica (ZAP)
     runs-on: ubuntu-latest
     outputs:
-      alertas: ${{ steps.datos.outputs.alertas }}
+      alertas: ${{ steps.salidas.outputs.alertas }}
 
     steps:
       - name: Obtener el código
@@ -169,7 +170,7 @@ jobs:
           -I
 
       - name: Datos para el resumen
-        id: datos
+        id: salidas
         if: ${{ !cancelled() }}
         run: echo "alertas=$(python3 scripts/ci_salidas.py zap reports/zap/zap-reporte.json .zap/rules.tsv)" >> "$GITHUB_OUTPUT"
 
@@ -202,7 +203,7 @@ jobs:
       - name: Obtener el código
         uses: actions/checkout@v5
 
-      - name: Armar resumen.json
+      - name: Generar resumen.json
         # Los datos que controla quien lanza la ejecución van por env:, nunca dentro del script
         env:
           NEEDS: ${{ toJSON(needs) }}
@@ -210,14 +211,16 @@ jobs:
           SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           PR: ${{ github.event.pull_request.number }}
           MOTIVO: ${{ inputs.motivo }}
-        run: python3 scripts/resumen.py generar > resumen.json
+        run: |
+          python3 scripts/resumen.py generar > resumen.json
+          cat resumen.json
 
       - name: Guardar resumen.json
         uses: actions/upload-artifact@v6
         with:
           name: resumen
           path: resumen.json
-          retention-days: 7
+          retention-days: 30
 
-      - name: Veredicto
+      - name: Decidir
         run: python3 scripts/resumen.py verificar resumen.json
